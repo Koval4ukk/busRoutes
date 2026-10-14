@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Маршрутизація автобусів (ORS + ArcGIS)</title>
+  
+  <link rel="stylesheet" href="https://js.arcgis.com/4.28/esri/themes/light/main.css">
+  <script src="https://js.arcgis.com/4.28/"></script>
+
+  <style>
+    html, body, #viewDiv {
+      padding: 0;
+      margin: 0;
+      height: 100%;
+      width: 100%;
+      font-family: sans-serif;
+    }
+    #ui-panel {
+      position: absolute;
+      top: 15px;
+      right: 15px;
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      z-index: 99;
+      width: 280px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    button {
+      width: 100%;
+      padding: 10px;
+      margin-top: 10px;
+      background-color: #0079c1;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    button:hover { background-color: #005a92; }
+    #clearBtn { background-color: #d32f2f; }
+    #clearBtn:hover { background-color: #b71c1c; }
+    #saveBtn { background-color: #2e7d32; margin-top: 15px; }
+    #saveBtn:hover { background-color: #1b5e20; }
+    #status { margin-top: 10px; font-size: 13px; color: #555; }
+    
+    #saveForm {
+      display: none;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #ddd;
+    }
+    .form-group {
+      margin-bottom: 10px;
+    }
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      margin-bottom: 4px;
+      color: #333;
+      font-weight: bold;
+    }
+    .form-group input, .form-group select {
+      width: 100%;
+      padding: 6px;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="viewDiv"></div>
+  
+  <div id="ui-panel">
+    <h3 style="margin-top: 0; font-size: 16px;">Побудова маршруту</h3>
+    <p style="font-size: 12px; margin-bottom: 5px;">Клікайте на зупинки на карті.</p>
+    <div id="status">Обрано зупинок: 0</div>
+    <button id="buildRouteBtn">Побудувати маршрут</button>
+    <button id="clearBtn">Очистити</button>
+
+    <div id="saveForm">
+      <div class="form-group">
+        <label>Номер маршруту</label>
+        <input type="text" id="inputRouteNum" placeholder="Наприклад: 107-505">
+      </div>
+      <div class="form-group">
+        <label>Назва маршруту</label>
+        <input type="text" id="inputRouteName" placeholder="Наприклад: Берегово – Кушниця">
+      </div>
+      <div class="form-group">
+        <label>Статус маршруту</label>
+        <select id="inputRouteState">
+          <option value="Діючий">Діючий</option>
+          <option value="Не діючий">Не діючий</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Тип маршруту</label>
+        <select id="inputRouteType">
+          <option value="Приміський">Приміський</option>
+          <option value="Міжміський">Міжміський</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Режим руху</label>
+        <select id="inputTrafficMode">
+          <option value="Звичайний">Звичайний</option>
+          <option value="Експрес">Експрес</option>
+          <option value="Маршрутне таксі">Маршрутне таксі</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Перевізник</label>
+        <input type="text" id="inputTransporter" placeholder="Введіть назву перевізника">
+      </div>
+      
+      <button id="saveBtn">Зберегти маршрут</button>
+    </div>
+  </div>
+
+  <script>
+    require([
+      "esri/config",
+      "esri/identity/IdentityManager", 
+      "esri/WebMap",
+      "esri/views/MapView",
+      "esri/layers/GraphicsLayer",
+      "esri/layers/FeatureLayer",
+      "esri/Graphic",
+      "esri/widgets/BasemapGallery", // Модуль галереї базових карт
+      "esri/widgets/Expand"          // Модуль для згортання віджета
+    ], function(esriConfig, esriId, WebMap, MapView, GraphicsLayer, FeatureLayer, Graphic, BasemapGallery, Expand) {
+
+      esriConfig.portalUrl = "https://gis.carpathia.gov.ua/portal";
+
+      const webmap = new WebMap({
+        portalItem: {
+          id: "61d4d16001a04bfca24bade650649522" 
+        }
+      });
+
+      const view = new MapView({
+        container: "viewDiv",
+        map: webmap
+      });
+
+      // --- ДОДАНО: Перемикач базових карт ---
+      const basemapGallery = new BasemapGallery({
+        view: view
+      });
+      
+      const bgExpand = new Expand({
+        view: view,
+        content: basemapGallery,
+        expandTooltip: "Змінити базову карту"
+      });
+      
+      // Додаємо віджет у верхній лівий кут
+      view.ui.add(bgExpand, "top-left");
+      // --------------------------------------
+
+      const saveTargetLayer = new FeatureLayer({
+        portalItem: {
+          id: "efaae7d10f624d848f3dda0933001e14"
+        }
+      });
+
+      view.popup.autoOpenEnabled = false;
+
+      const routeLayer = new GraphicsLayer();
+      const stopsLayer = new GraphicsLayer();
+      webmap.addMany([routeLayer, stopsLayer]);
+
+      let selectedStopsCoordinates = []; 
+      let currentRouteGeometry = null; 
+
+      view.on("click", async (event) => {
+        const response = await view.hitTest(event);
+        
+        const validHits = response.results.filter(result => {
+          if (result.type !== "graphic" || !result.graphic.layer) return false;
+          const layerType = result.graphic.layer.type;
+          return layerType === "csv" || layerType === "feature";
+        });
+
+        if (validHits.length > 0) {
+          const clickedGraphic = validHits[0].graphic;
+          const geometry = clickedGraphic.geometry;
+
+          if (geometry && geometry.type === "point") {
+            if (selectedStopsCoordinates.length === 0) {
+              const attrs = clickedGraphic.attributes || {};
+              const rNum = attrs["routeNum"] || attrs["routenum"] || attrs["Номер маршруту"] || "";
+              const rName = attrs["routeName"] || attrs["routename"] || attrs["Назва маршруту"] || "";
+              
+              document.getElementById("inputRouteNum").value = rNum;
+              document.getElementById("inputRouteName").value = rName;
+            }
+
+            selectedStopsCoordinates.push([geometry.longitude, geometry.latitude]);
+
+            const pointGraphic = new Graphic({
+              geometry: geometry,
+              symbol: {
+                type: "simple-marker",
+                color: [226, 119, 40],
+                outline: { color: [255, 255, 255], width: 2 },
+                size: "14px"
+              }
+            });
+            stopsLayer.add(pointGraphic);
+
+            document.getElementById("status").innerText = `Обрано зупинок: ${selectedStopsCoordinates.length}`;
+          }
+        }
+      });
+
+      document.getElementById("buildRouteBtn").addEventListener("click", async () => {
+        if (selectedStopsCoordinates.length < 2) {
+          alert("Будь ласка, виберіть щонайменше дві зупинки.");
+          return;
+        }
+
+        const apiKey = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjNlMWYwNWRmZDFhYzQwZDU5NjI4YWE3ODI2NDQ3MDdlIiwiaCI6Im11cm11cjY0In0=";
+        const url = "https://api.openrouteservice.org/v2/directions/driving-hgv/geojson"; 
+
+        try {
+          document.getElementById("status").innerText = "Обчислення маршруту...";
+          
+          const response = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Authorization": apiKey,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              coordinates: selectedStopsCoordinates,
+              elevation: false,
+              instructions: false
+            })
+          });
+
+          if (!response.ok) {
+            throw new Error(`Помилка API: ${response.status}`);
+          }
+
+          const geojson = await response.json();
+          drawRoute(geojson);
+          document.getElementById("status").innerText = "Маршрут побудовано успішно.";
+          
+          document.getElementById("saveForm").style.display = "block";
+          
+        } catch (error) {
+          console.error("Помилка маршрутизації:", error);
+          document.getElementById("status").innerText = "Помилка побудови маршруту.";
+          alert("Не вдалося побудувати маршрут. Перевірте консоль для деталей.");
+        }
+      });
+
+      function drawRoute(geojson) {
+        routeLayer.removeAll(); 
+        const coordinates = geojson.features[0].geometry.coordinates;
+        currentRouteGeometry = {
+          type: "polyline",
+          paths: coordinates
+        };
+
+        const routeGraphic = new Graphic({
+          geometry: currentRouteGeometry,
+          symbol: {
+            type: "simple-line",
+            color: [0, 122, 204, 0.9],
+            width: 4
+          }
+        });
+        routeLayer.add(routeGraphic);
+      }
+
+      document.getElementById("saveBtn").addEventListener("click", () => {
+        if (!currentRouteGeometry) {
+          alert("Немає маршруту для збереження.");
+          return;
+        }
+
+        const rNum = document.getElementById("inputRouteNum").value.trim();
+        const rName = document.getElementById("inputRouteName").value.trim();
+        const rState = document.getElementById("inputRouteState").value;
+        const rType = document.getElementById("inputRouteType").value;
+        const rTraffic = document.getElementById("inputTrafficMode").value;
+        const rTransporter = document.getElementById("inputTransporter").value.trim();
+
+        if (!rNum || !rName) {
+          alert("Будь ласка, переконайтеся, що номер та назва маршруту заповнені.");
+          return;
+        }
+
+        const featureToSave = new Graphic({
+          geometry: currentRouteGeometry,
+          attributes: {
+            "routenum": rNum,
+            "routename": rName,
+            "routestate": rState,
+            "routetype": rType,
+            "trafficmode": rTraffic,
+            "transporter": rTransporter
+          }
+        });
+
+        document.getElementById("saveBtn").innerText = "Збереження...";
+        document.getElementById("saveBtn").disabled = true;
+
+        saveTargetLayer.applyEdits({
+          addFeatures: [featureToSave]
+        }).then((editResults) => {
+          document.getElementById("saveBtn").innerText = "Зберегти маршрут";
+          document.getElementById("saveBtn").disabled = false;
+
+          if (editResults.addFeatureResults.length > 0 && editResults.addFeatureResults[0].error) {
+            console.error("Помилка збереження:", editResults.addFeatureResults[0].error);
+            alert("Помилка при збереженні маршруту. Перевірте консоль.");
+          } else {
+            alert(`Маршрут успішно збережено у базу даних!`);
+            
+            // --- ДОДАНО: Оновлення шарів на карті без зміни екстенту ---
+            webmap.allLayers.forEach(layer => {
+              if (layer.type === "feature") {
+                layer.refresh();
+              }
+            });
+            // ------------------------------------------------------------
+            
+            resetUI();
+          }
+        }).catch((error) => {
+          document.getElementById("saveBtn").innerText = "Зберегти маршрут";
+          document.getElementById("saveBtn").disabled = false;
+          console.error("Критична помилка збереження:", error);
+          alert("Не вдалося підключитися до шару для збереження. Перевірте права доступу.");
+        });
+      });
+
+      function resetUI() {
+        selectedStopsCoordinates = [];
+        currentRouteGeometry = null;
+        routeLayer.removeAll();
+        stopsLayer.removeAll();
+        document.getElementById("status").innerText = "Обрано зупинок: 0";
+        
+        document.getElementById("inputRouteNum").value = "";
+        document.getElementById("inputRouteName").value = "";
+        document.getElementById("inputTransporter").value = "";
+        
+        document.getElementById("saveForm").style.display = "none";
+      }
+
+      document.getElementById("clearBtn").addEventListener("click", resetUI);
+
+    });
+  </script>
+</body>
+</html>
