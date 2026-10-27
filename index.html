@@ -47,7 +47,6 @@
     #saveBtn { background-color: #2e7d32; margin-top: 15px; }
     #saveBtn:hover { background-color: #1b5e20; }
     
-    /* Стилі для кнопок пошуку */
     #searchBtn { background-color: #e0e0e0; color: #333; margin-top: 5px; }
     #searchBtn:hover { background-color: #ccc; }
     
@@ -86,10 +85,16 @@
   <div id="ui-panel">
     <h3 style="margin-top: 0; font-size: 16px;">Побудова маршруту</h3>
     
-    <!-- Блок пошуку зупинок -->
     <div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee;">
-      <label style="font-size: 12px; font-weight: bold;">Пошук за номером маршруту</label>
-      <input type="text" id="searchRouteNum" placeholder="Напр: 107-505" style="width: 100%; padding: 6px; margin-top: 5px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;">
+      <label style="font-size: 12px; font-weight: bold;">Пошук маршруту</label>
+      
+      <!-- ДОДАНО: Вибір напрямку (шару) для пошуку -->
+      <select id="searchDirection" style="width: 100%; padding: 6px; margin-top: 5px; margin-bottom: 5px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;">
+        <option value="Прямий">Напрямок: Прямий</option>
+        <option value="Зворотній">Напрямок: Зворотній</option>
+      </select>
+
+      <input type="text" id="searchRouteNum" placeholder="Номер (Напр: 107-505)" style="width: 100%; padding: 6px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;">
       <button id="searchBtn">Знайти зупинки</button>
     </div>
 
@@ -164,7 +169,6 @@
         map: webmap
       });
 
-      // Перемикач базових карт
       const basemapGallery = new BasemapGallery({ view: view });
       const bgExpand = new Expand({
         view: view,
@@ -173,7 +177,6 @@
       });
       view.ui.add(bgExpand, "top-left");
 
-      // Цільовий шар збереження
       const saveTargetLayer = new FeatureLayer({
         portalItem: { id: "efaae7d10f624d848f3dda0933001e14" }
       });
@@ -187,49 +190,47 @@
       let selectedStopsCoordinates = []; 
       let currentRouteGeometry = null; 
 
-      // ДОДАНО: Логіка пошуку зупинок
+      // Пошук зупинок з урахуванням обраного шару (напрямку)
       document.getElementById("searchBtn").addEventListener("click", async () => {
         const searchVal = document.getElementById("searchRouteNum").value.trim();
+        const searchDir = document.getElementById("searchDirection").value; // Отримуємо назву шару: "Прямий" або "Зворотній"
+        
         if (!searchVal) {
           alert("Будь ласка, введіть номер маршруту для пошуку.");
           return;
         }
 
-        // Очищаємо попередній вибір перед новим пошуком
         resetUI();
         
         document.getElementById("searchBtn").innerText = "Пошук...";
-        document.getElementById("searchRouteNum").value = searchVal; // Повертаємо значення, бо resetUI його міг зачепити
+        document.getElementById("searchRouteNum").value = searchVal;
 
         try {
-          let foundFeatures = [];
+          // Шукаємо конкретний шар за його назвою (title)
+          const targetLayer = webmap.layers.find(layer => layer.title && layer.title.trim() === searchDir);
 
-          // Проходимо по всіх шарах, щоб знайти шар із зупинками
-          for (const layer of webmap.layers) {
-            if (layer.type === "csv" || layer.type === "feature") {
-              const query = layer.createQuery();
-              query.where = "1=1"; // Завантажуємо всі об'єкти для безпечної фільтрації
-              query.outFields = ["*"];
-              query.returnGeometry = true;
-              
-              const results = await layer.queryFeatures(query);
-              
-              // Шукаємо збіги по номеру маршруту у різних варіаціях назв полів
-              const matched = results.features.filter(f => {
-                const attrs = f.attributes || {};
-                const rNum = attrs["routeNum"] || attrs["routenum"] || attrs["Номер маршруту"] || "";
-                return String(rNum).trim() === searchVal;
-              });
-              
-              foundFeatures = foundFeatures.concat(matched);
-            }
+          if (!targetLayer) {
+            alert(`Шар з назвою "${searchDir}" не знайдено на веб-карті.`);
+            return;
           }
 
-          if (foundFeatures.length === 0) {
-            alert(`Зупинок для маршруту "${searchVal}" не знайдено на поточних шарах.`);
+          const query = targetLayer.createQuery();
+          query.where = "1=1"; 
+          query.outFields = ["*"];
+          query.returnGeometry = true;
+          
+          const results = await targetLayer.queryFeatures(query);
+          
+          const matchedFeatures = results.features.filter(f => {
+            const attrs = f.attributes || {};
+            const rNum = attrs["routeNum"] || attrs["routenum"] || attrs["Номер маршруту"] || "";
+            return String(rNum).trim() === searchVal;
+          });
+
+          if (matchedFeatures.length === 0) {
+            alert(`Зупинок для маршруту "${searchVal}" у шарі "${searchDir}" не знайдено.`);
           } else {
-            // Малюємо знайдені зупинки та додаємо їх у масив для ORS
-            foundFeatures.forEach(feature => {
+            matchedFeatures.forEach(feature => {
               const geom = feature.geometry;
               if (geom && geom.type === "point") {
                 selectedStopsCoordinates.push([geom.longitude, geom.latitude]);
@@ -247,15 +248,18 @@
               }
             });
 
-            // Заповнюємо форму першим знайденим записом
-            const firstAttrs = foundFeatures[0].attributes;
+            const firstAttrs = matchedFeatures[0].attributes;
             document.getElementById("inputRouteNum").value = firstAttrs["routeNum"] || firstAttrs["routenum"] || firstAttrs["Номер маршруту"] || searchVal;
             document.getElementById("inputRouteName").value = firstAttrs["routeName"] || firstAttrs["routename"] || firstAttrs["Назва маршруту"] || "";
 
-            document.getElementById("status").innerText = `Обрано зупинок: ${selectedStopsCoordinates.length}`;
+            document.getElementById("status").innerText = `Обрано зупинок: ${selectedStopsCoordinates.length} (Напрямок: ${searchDir})`;
             
-            // За бажанням: можна центрувати карту на знайдених зупинках
-            // view.goTo(foundFeatures); 
+            // Автоматичне центрування карти
+            view.goTo({
+              target: matchedFeatures
+            }, {
+              duration: 1000
+            });
           }
         } catch (error) {
           console.error("Помилка пошуку:", error);
@@ -265,7 +269,7 @@
         }
       });
 
-      // Ручне додавання точок по кліку
+      // Ручне додавання точок
       view.on("click", async (event) => {
         const response = await view.hitTest(event);
         
