@@ -88,7 +88,6 @@
     <div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee;">
       <label style="font-size: 12px; font-weight: bold;">Пошук маршруту</label>
       
-      <!-- ДОДАНО: Вибір напрямку (шару) для пошуку -->
       <select id="searchDirection" style="width: 100%; padding: 6px; margin-top: 5px; margin-bottom: 5px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px;">
         <option value="Прямий">Напрямок: Прямий</option>
         <option value="Зворотній">Напрямок: Зворотній</option>
@@ -164,6 +163,11 @@
         }
       });
 
+      webmap.load().catch(function(error) {
+        console.error("ПОМИЛКА ЗАВАНТАЖЕННЯ КАРТИ:", error);
+        alert("Помилка завантаження карти. Перевірте консоль (F12) для деталей.");
+      });
+
       const view = new MapView({
         container: "viewDiv",
         map: webmap
@@ -190,23 +194,65 @@
       let selectedStopsCoordinates = []; 
       let currentRouteGeometry = null; 
 
-      // Пошук зупинок з урахуванням обраного шару (напрямку)
+      // --- ДОДАНО: Анімація блимання обраних зупинок ---
+      let blinkState = false;
+      setInterval(() => {
+        if (stopsLayer.graphics.length > 0) {
+          blinkState = !blinkState;
+          
+          // Стан 1: Стандартний помаранчевий маркер з контрастним чорним контуром
+          const symbolA = {
+            type: "simple-marker",
+            color: [226, 119, 40, 1],
+            outline: { color: [0, 0, 0, 1], width: 2 },
+            size: "14px"
+          };
+          
+          // Стан 2: Збільшений яскраво-жовтий маркер із червоним контуром
+          const symbolB = {
+            type: "simple-marker",
+            color: [255, 255, 0, 1],
+            outline: { color: [200, 0, 0, 1], width: 3 },
+            size: "20px"
+          };
+
+          const currentSymbol = blinkState ? symbolA : symbolB;
+
+          // Оновлюємо символи для всіх знайдених точок
+          stopsLayer.graphics.forEach(graphic => {
+            graphic.symbol = currentSymbol;
+          });
+        }
+      }, 600); // Швидкість блимання (600 мс)
+      // ------------------------------------------------
+
+      const normalizeString = (str) => {
+        if (str === null || str === undefined) return "";
+        return String(str)
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, '') 
+          .replace(/[–—_−-]/g, '-')
+          .replace(/\\/g, '/');
+      };
+
+      // Пошук зупинок
       document.getElementById("searchBtn").addEventListener("click", async () => {
         const searchVal = document.getElementById("searchRouteNum").value.trim();
-        const searchDir = document.getElementById("searchDirection").value; // Отримуємо назву шару: "Прямий" або "Зворотній"
+        const searchDir = document.getElementById("searchDirection").value; 
         
         if (!searchVal) {
           alert("Будь ласка, введіть номер маршруту для пошуку.");
           return;
         }
 
+        const normalizedSearch = normalizeString(searchVal);
         resetUI();
         
         document.getElementById("searchBtn").innerText = "Пошук...";
         document.getElementById("searchRouteNum").value = searchVal;
 
         try {
-          // Шукаємо конкретний шар за його назвою (title)
           const targetLayer = webmap.layers.find(layer => layer.title && layer.title.trim() === searchDir);
 
           if (!targetLayer) {
@@ -214,17 +260,55 @@
             return;
           }
 
+          await targetLayer.load();
+
           const query = targetLayer.createQuery();
           query.where = "1=1"; 
           query.outFields = ["*"];
           query.returnGeometry = true;
           
-          const results = await targetLayer.queryFeatures(query);
+          let allFeatures = [];
           
-          const matchedFeatures = results.features.filter(f => {
+          try {
+            if (targetLayer.type === "feature" && targetLayer.capabilities && targetLayer.capabilities.query.supportsPagination) {
+              let start = 0;
+              let num = 2000;
+              let hasMore = true;
+              while (hasMore) {
+                query.start = start;
+                query.num = num;
+                const res = await targetLayer.queryFeatures(query);
+                allFeatures = allFeatures.concat(res.features);
+                if (res.exceededTransferLimit || res.features.length === num) {
+                  start += num;
+                } else {
+                  hasMore = false;
+                }
+                if (start > 50000) break;
+              }
+            } else {
+              query.num = 100000;
+              const res = await targetLayer.queryFeatures(query);
+              allFeatures = res.features;
+            }
+          } catch (e) {
+            query.start = undefined;
+            query.num = 100000;
+            const res = await targetLayer.queryFeatures(query);
+            allFeatures = res.features;
+          }
+          
+          const matchedFeatures = allFeatures.filter(f => {
             const attrs = f.attributes || {};
-            const rNum = attrs["routeNum"] || attrs["routenum"] || attrs["Номер маршруту"] || "";
-            return String(rNum).trim() === searchVal;
+            for (const key in attrs) {
+              if (attrs.hasOwnProperty(key) && attrs[key]) {
+                const valStr = normalizeString(attrs[key]);
+                if (valStr === normalizedSearch || valStr.includes(normalizedSearch)) {
+                  return true;
+                }
+              }
+            }
+            return false;
           });
 
           if (matchedFeatures.length === 0) {
@@ -235,26 +319,24 @@
               if (geom && geom.type === "point") {
                 selectedStopsCoordinates.push([geom.longitude, geom.latitude]);
 
+                // Символ буде автоматично переписаний інтервалом блимання
                 const pointGraphic = new Graphic({
                   geometry: geom,
-                  symbol: {
-                    type: "simple-marker",
-                    color: [226, 119, 40],
-                    outline: { color: [255, 255, 255], width: 2 },
-                    size: "14px"
-                  }
+                  symbol: { type: "simple-marker", color: [226, 119, 40], size: "14px" }
                 });
                 stopsLayer.add(pointGraphic);
               }
             });
 
             const firstAttrs = matchedFeatures[0].attributes;
-            document.getElementById("inputRouteNum").value = firstAttrs["routeNum"] || firstAttrs["routenum"] || firstAttrs["Номер маршруту"] || searchVal;
-            document.getElementById("inputRouteName").value = firstAttrs["routeName"] || firstAttrs["routename"] || firstAttrs["Назва маршруту"] || "";
+            const guessNum = firstAttrs["routeNum"] || firstAttrs["routenum"] || firstAttrs["Номер маршруту"] || searchVal;
+            const guessName = firstAttrs["routeName"] || firstAttrs["routename"] || firstAttrs["Назва маршруту"] || "";
+            
+            document.getElementById("inputRouteNum").value = guessNum;
+            document.getElementById("inputRouteName").value = guessName;
 
             document.getElementById("status").innerText = `Обрано зупинок: ${selectedStopsCoordinates.length} (Напрямок: ${searchDir})`;
             
-            // Автоматичне центрування карти
             view.goTo({
               target: matchedFeatures
             }, {
@@ -263,7 +345,7 @@
           }
         } catch (error) {
           console.error("Помилка пошуку:", error);
-          alert("Виникла помилка під час пошуку зупинок.");
+          alert("Виникла помилка під час пошуку. Відкрийте консоль браузера (F12) для деталей.");
         } finally {
           document.getElementById("searchBtn").innerText = "Знайти зупинки";
         }
@@ -297,12 +379,7 @@
 
             const pointGraphic = new Graphic({
               geometry: geometry,
-              symbol: {
-                type: "simple-marker",
-                color: [226, 119, 40],
-                outline: { color: [255, 255, 255], width: 2 },
-                size: "14px"
-              }
+              symbol: { type: "simple-marker", color: [226, 119, 40], size: "14px" }
             });
             stopsLayer.add(pointGraphic);
 
